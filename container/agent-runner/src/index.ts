@@ -407,7 +407,7 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -423,7 +423,13 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        'x-trade': {
+          command: 'node',
+          args: ['-e', 'const net = require("net"); const client = net.createConnection("/workspace/ipc/mcp_x-trade.sock", () => { process.stdin.pipe(client); client.pipe(process.stdout); }); client.on("error", (e) => { console.error("MCP socket error:", e.message); process.exit(1); }); client.on("end", () => process.exit(0));'],
+        }
+
       },
+
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },

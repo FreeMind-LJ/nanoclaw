@@ -9,10 +9,12 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  deleteSession,
   getAllTasks,
   getDueTasks,
   getTaskById,
   logTaskRun,
+  setSession,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
@@ -73,6 +75,11 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+}
+
+function isRecoverableSessionResumeError(error: string | null): boolean {
+  if (!error) return false;
+  return error.includes('Claude Code process exited with code 1');
 }
 
 async function runTask(
@@ -151,7 +158,7 @@ async function runTask(
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
-  const sessionId =
+  const initialSessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
   // After the task produces a result, close the container promptly.
@@ -168,8 +175,8 @@ async function runTask(
     }, TASK_CLOSE_DELAY_MS);
   };
 
-  try {
-    const output = await runContainerAgent(
+  const runOnce = async (sessionId?: string): Promise<ContainerOutput> =>
+    runContainerAgent(
       group,
       {
         prompt: task.prompt,
@@ -183,6 +190,10 @@ async function runTask(
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.newSessionId) {
+          sessions[task.group_folder] = streamedOutput.newSessionId;
+          setSession(task.group_folder, streamedOutput.newSessionId);
+        }
         if (streamedOutput.result) {
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)
@@ -198,6 +209,42 @@ async function runTask(
         }
       },
     );
+
+  try {
+    let output = await runOnce(initialSessionId);
+
+    if (
+      output.newSessionId &&
+      output.newSessionId !== sessions[task.group_folder]
+    ) {
+      sessions[task.group_folder] = output.newSessionId;
+      setSession(task.group_folder, output.newSessionId);
+    }
+
+    if (
+      output.status === 'error' &&
+      task.context_mode === 'group' &&
+      initialSessionId &&
+      isRecoverableSessionResumeError(output.error || null)
+    ) {
+      logger.warn(
+        {
+          taskId: task.id,
+          group: task.group_folder,
+          sessionId: initialSessionId,
+        },
+        'Scheduled task failed while resuming session, retrying with a fresh session',
+      );
+      delete sessions[task.group_folder];
+      deleteSession(task.group_folder);
+      error = null;
+      result = null;
+      output = await runOnce(undefined);
+      if (output.newSessionId) {
+        sessions[task.group_folder] = output.newSessionId;
+        setSession(task.group_folder, output.newSessionId);
+      }
+    }
 
     if (closeTimer) clearTimeout(closeTimer);
 

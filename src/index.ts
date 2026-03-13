@@ -26,6 +26,7 @@ import {
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
+import { readEnvFile } from './env.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -267,7 +268,15 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  const envConfig = readEnvFile(['ANTHROPIC_BASE_URL']);
+  const usingThirdPartyEndpoint =
+    !!envConfig.ANTHROPIC_BASE_URL &&
+    !/api\.anthropic\.com\/?$/.test(
+      envConfig.ANTHROPIC_BASE_URL.replace(/\/+$/, ''),
+    );
+  const sessionId = usingThirdPartyEndpoint
+    ? undefined
+    : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();

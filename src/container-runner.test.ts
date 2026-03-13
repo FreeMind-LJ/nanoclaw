@@ -51,6 +51,14 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
+vi.mock('./credential-proxy.js', () => ({
+  mcpManager: {
+    ensureServer: vi.fn(),
+  },
+  startCredentialProxy: vi.fn(),
+  detectAuthMode: vi.fn(() => 'api-key'),
+}));
+
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {

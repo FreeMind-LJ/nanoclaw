@@ -239,10 +239,14 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=-${projectRoot}/scripts/systemd-container-cleanup.sh
 ExecStart=${nodePath} ${projectRoot}/dist/index.js
+ExecStopPost=-${projectRoot}/scripts/systemd-container-cleanup.sh
 WorkingDirectory=${projectRoot}
+KillMode=process
 Restart=always
 RestartSec=5
+TimeoutStopSec=20
 Environment=HOME=${homeDir}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin
 StandardOutput=append:${projectRoot}/logs/nanoclaw.log

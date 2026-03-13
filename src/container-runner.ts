@@ -26,6 +26,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -121,30 +122,50 @@ function buildVolumeMounts(
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
+  const claudeRequiredDirs = [
+    groupSessionsDir,
+    path.join(groupSessionsDir, 'debug'),
+    path.join(groupSessionsDir, 'projects'),
+    path.join(groupSessionsDir, 'backups'),
+    path.join(groupSessionsDir, 'shell-snapshots'),
+    path.join(groupSessionsDir, 'skills'),
+    path.join(groupSessionsDir, 'session-env'),
+  ];
+  for (const dir of claudeRequiredDirs) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+  const settingsFile = path.join(groupSessionsDir, 'settings.json');
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    } catch (err) {
+      logger.warn(
+        { err, settingsFile },
+        'Failed to parse Claude settings, recreating',
+      );
+    }
+  }
+  const existingEnv =
+    settings.env && typeof settings.env === 'object'
+      ? (settings.env as Record<string, string>)
+      : {};
+  settings.env = {
+    ...existingEnv,
+    // Enable agent swarms (subagent orchestration)
+    // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+    // Load CLAUDE.md from additional mounted directories
+    // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
+    CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+    // Enable Claude's memory feature (persists user preferences between sessions)
+    // https://code.claude.com/docs/en/memory#manage-auto-memory
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+    // DashScope-compatible deployments do not support Anthropic's org telemetry APIs.
+    // Disable nonessential background traffic so Claude Code stays on the configured base URL.
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  };
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
 
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
@@ -162,6 +183,14 @@ function buildVolumeMounts(
     containerPath: '/home/node/.claude',
     readonly: false,
   });
+  logger.debug(
+    {
+      group: group.name,
+      groupSessionsDir,
+      claudeRequiredDirs,
+    },
+    'Prepared per-group Claude session directories',
+  );
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
@@ -238,6 +267,12 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Pass model configuration if specified
+  const envConfig = readEnvFile(['ANTHROPIC_MODEL']);
+  if (envConfig.ANTHROPIC_MODEL) {
+    args.push('-e', `ANTHROPIC_MODEL=${envConfig.ANTHROPIC_MODEL}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
@@ -264,6 +299,8 @@ function buildContainerArgs(
   return args;
 }
 
+import { mcpManager, startCredentialProxy } from './credential-proxy.js';
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -275,7 +312,11 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
+  // Ensure x-trade MCP server is running for this group
+  mcpManager.ensureServer(group.folder, 'x-trade');
+
   const mounts = buildVolumeMounts(group, input.isMain);
+
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -305,6 +346,37 @@ export async function runContainerAgent(
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
+
+  if (process.getuid?.() === 0) {
+    try {
+      const groupSessionsDir = path.join(
+        DATA_DIR,
+        'sessions',
+        group.folder,
+        '.claude',
+      );
+      const groupIpcDir = resolveGroupIpcPath(group.folder);
+      const groupAgentRunnerDir = path.join(
+        DATA_DIR,
+        'sessions',
+        group.folder,
+        'agent-runner-src',
+      );
+      import('child_process').then(({ execSync }) => {
+        execSync(
+          `chown -R 1000:1000 "${groupSessionsDir}" "${groupIpcDir}" "${groupAgentRunnerDir}" 2>/dev/null || true`,
+        );
+        execSync(
+          `chown 1000:1000 "${groupDir}" "${logsDir}" 2>/dev/null || true`,
+        );
+      });
+    } catch (e) {
+      logger.warn(
+        { err: e },
+        'Failed to set permissions for container directories',
+      );
+    }
+  }
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -538,8 +610,12 @@ export async function runContainerAgent(
         );
       }
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      try {
+        fs.writeFileSync(logFile, logLines.join('\n'));
+        logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      } catch (err) {
+        logger.warn({ err, logFile }, 'Failed to write container log file');
+      }
 
       if (code !== 0) {
         logger.error(
