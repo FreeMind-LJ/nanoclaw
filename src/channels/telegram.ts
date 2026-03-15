@@ -24,6 +24,7 @@ export class TelegramChannel implements Channel {
   private opts: TelegramChannelOpts;
   private botToken: string;
   private pollingTask: Promise<void> | null = null;
+  private shuttingDown = false;
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -31,6 +32,7 @@ export class TelegramChannel implements Channel {
   }
 
   async connect(): Promise<void> {
+    this.shuttingDown = false;
     this.bot = new Bot(this.botToken);
 
     // Command to get chat ID (useful for registration)
@@ -207,8 +209,11 @@ export class TelegramChannel implements Channel {
       }).catch((err) => {
         this.bot = null;
         this.pollingTask = null;
+        if (this.shuttingDown) {
+          logger.info('Telegram bot polling stopped after disconnect');
+          return;
+        }
         logger.error({ err }, 'Telegram bot polling stopped');
-        process.exit(1);
       });
     });
   }
@@ -249,6 +254,7 @@ export class TelegramChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    this.shuttingDown = true;
     if (this.bot) {
       this.bot.stop();
       this.bot = null;

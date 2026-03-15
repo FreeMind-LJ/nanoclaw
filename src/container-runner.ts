@@ -158,9 +158,9 @@ function buildVolumeMounts(
     // Load CLAUDE.md from additional mounted directories
     // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
     CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-    // Enable Claude's memory feature (persists user preferences between sessions)
-    // https://code.claude.com/docs/en/memory#manage-auto-memory
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+    // Disable Claude auto-memory to reduce stale style/workflow carryover
+    // inside tightly specified workflow groups.
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     // DashScope-compatible deployments do not support Anthropic's org telemetry APIs.
     // Disable nonessential background traffic so Claude Code stays on the configured base URL.
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -219,8 +219,12 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
+    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, {
+      recursive: true,
+      force: true,
+    });
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

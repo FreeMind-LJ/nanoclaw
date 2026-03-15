@@ -67,7 +67,56 @@ let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
+const CHANNEL_CONNECT_TIMEOUT_MS = 15000;
+const STRICT_OUTPUT_GROUP_FOLDERS = new Set(['internal_trading-desk']);
+const INTERNAL_WORKFLOW_LEAK_PATTERNS = [
+  /用户要求分析/u,
+  /我需要先/u,
+  /让我先/u,
+  /首先更新数据/u,
+  /现在调用/u,
+  /调用\s*analyze_instrument/u,
+  /进行深度分析/u,
+];
+
+async function connectChannelWithTimeout(channel: Channel): Promise<void> {
+  await Promise.race([
+    channel.connect(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        reject(
+          new Error(
+            `Channel ${channel.name} connect timed out after ${CHANNEL_CONNECT_TIMEOUT_MS}ms`,
+          ),
+        );
+      }, CHANNEL_CONNECT_TIMEOUT_MS),
+    ),
+  ]);
+}
 const queue = new GroupQueue();
+
+function shouldUseFreshSession(group: RegisteredGroup): boolean {
+  return STRICT_OUTPUT_GROUP_FOLDERS.has(group.folder);
+}
+
+function shouldDeliverGroupOutput(
+  group: RegisteredGroup | undefined,
+  rawText: string,
+): boolean {
+  if (!group) return true;
+
+  const text = formatOutbound(rawText);
+  if (!text) return false;
+  if (!STRICT_OUTPUT_GROUP_FOLDERS.has(group.folder)) return true;
+
+  if (INTERNAL_WORKFLOW_LEAK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+
+  return (
+    text.includes('【当前视角】') || text.includes('当前不做多，也不做空')
+  );
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -218,9 +267,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
+      if (text && shouldDeliverGroupOutput(group, text)) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+      } else if (text) {
+        logger.warn(
+          { group: group.name, preview: text.slice(0, 200) },
+          'Suppressed non-user-facing agent output',
+        );
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -274,9 +328,10 @@ async function runAgent(
     !/api\.anthropic\.com\/?$/.test(
       envConfig.ANTHROPIC_BASE_URL.replace(/\/+$/, ''),
     );
-  const sessionId = usingThirdPartyEndpoint
-    ? undefined
-    : sessions[group.folder];
+  const sessionId =
+    usingThirdPartyEndpoint || shouldUseFreshSession(group)
+      ? undefined
+      : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -471,7 +526,6 @@ function recoverPendingMessages(): void {
 
 function ensureContainerSystemRunning(): void {
   ensureContainerRuntimeRunning();
-  cleanupOrphans();
 }
 
 async function main(): Promise<void> {
@@ -485,6 +539,10 @@ async function main(): Promise<void> {
     CREDENTIAL_PROXY_PORT,
     PROXY_BIND_HOST,
   );
+  // Only reap old containers after this process has successfully claimed the
+  // proxy port. Otherwise, a duplicate instance can fail to bind and still
+  // kill active worker containers from the healthy instance.
+  cleanupOrphans();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -541,8 +599,21 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    try {
+      await connectChannelWithTimeout(channel);
+      channels.push(channel);
+    } catch (err) {
+      logger.error(
+        { channel: channelName, err },
+        'Channel failed to connect; skipping startup for this channel',
+      );
+      await channel.disconnect().catch((disconnectErr) => {
+        logger.warn(
+          { channel: channelName, err: disconnectErr },
+          'Channel cleanup after failed connect also failed',
+        );
+      });
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
@@ -562,6 +633,14 @@ async function main(): Promise<void> {
         logger.warn({ jid }, 'No channel owns JID, cannot send message');
         return;
       }
+      const group = registeredGroups[jid];
+      if (!shouldDeliverGroupOutput(group, rawText)) {
+        logger.warn(
+          { jid, preview: rawText.slice(0, 200) },
+          'Suppressed non-user-facing scheduler output',
+        );
+        return;
+      }
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
@@ -570,6 +649,14 @@ async function main(): Promise<void> {
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      const group = registeredGroups[jid];
+      if (!shouldDeliverGroupOutput(group, text)) {
+        logger.warn(
+          { jid, preview: text.slice(0, 200) },
+          'Suppressed non-user-facing IPC output',
+        );
+        return Promise.resolve();
+      }
       return channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
