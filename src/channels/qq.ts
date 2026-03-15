@@ -170,14 +170,19 @@ export class QQChannel implements Channel {
     try {
       const accessToken = await this.getAccessToken();
       const openid = jid.replace(/^qq:c2c:/, '');
-      await this.apiRequest(accessToken, 'POST', `/v2/users/${openid}/messages`, {
-        msg_type: 6,
-        input_notify: {
-          input_type: 1,
-          input_second: 60,
+      await this.apiRequest(
+        accessToken,
+        'POST',
+        `/v2/users/${openid}/messages`,
+        {
+          msg_type: 6,
+          input_notify: {
+            input_type: 1,
+            input_second: 60,
+          },
+          msg_seq: 1,
         },
-        msg_seq: 1,
-      });
+      );
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send QQ typing indicator');
     }
@@ -188,7 +193,9 @@ export class QQChannel implements Channel {
     const gateway = await this.apiRequest(accessToken, 'GET', '/gateway');
     const url = typeof gateway.url === 'string' ? gateway.url : '';
     if (!url) {
-      throw new Error(`QQ gateway response missing url: ${JSON.stringify(gateway)}`);
+      throw new Error(
+        `QQ gateway response missing url: ${JSON.stringify(gateway)}`,
+      );
     }
 
     await new Promise<void>((resolve, reject) => {

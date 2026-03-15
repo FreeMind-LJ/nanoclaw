@@ -370,7 +370,10 @@ export class GroupQueue {
         try {
           await stopContainer(containerName);
         } catch (err) {
-          logger.warn({ containerName, err }, 'Failed to stop active container during shutdown');
+          logger.warn(
+            { containerName, err },
+            'Failed to stop active container during shutdown',
+          );
         }
       }),
     );

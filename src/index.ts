@@ -113,9 +113,7 @@ function shouldDeliverGroupOutput(
     return false;
   }
 
-  return (
-    text.includes('【当前视角】') || text.includes('当前不做多，也不做空')
-  );
+  return text.includes('【当前视角】') || text.includes('当前不做多，也不做空');
 }
 
 function loadState(): void {
