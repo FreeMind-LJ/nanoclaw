@@ -64,7 +64,11 @@ class McpManager {
       '/usr/bin/python3',
       ['/home/ops/x-trade/mcp_shim.py'],
       {
-        env: { ...process.env, PYTHONPATH: '/home/ops/x-trade' },
+        env: {
+          ...process.env,
+          PYTHONPATH: '/home/ops/x-trade',
+          NANOCLAW_GROUP_FOLDER: groupFolder,
+        },
       },
     );
 
