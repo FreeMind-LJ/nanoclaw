@@ -317,7 +317,7 @@ export async function runContainerAgent(
   fs.mkdirSync(groupDir, { recursive: true });
 
   // Ensure x-trade MCP server is running for this group
-  mcpManager.ensureServer(group.folder, 'x-trade');
+  mcpManager.ensureServer(group.folder, 'x-trade', input.chatJid);
 
   const mounts = buildVolumeMounts(group, input.isMain);
 

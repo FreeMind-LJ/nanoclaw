@@ -34,7 +34,7 @@ class McpManager {
     return path.join(ipcDir, `mcp_${serverName}.sock`);
   }
 
-  ensureServer(groupFolder: string, serverName: string) {
+  ensureServer(groupFolder: string, serverName: string, chatJid?: string) {
     const key = `${groupFolder}:${serverName}`;
     if (this.servers.has(key)) return;
 
@@ -68,6 +68,7 @@ class McpManager {
           ...process.env,
           PYTHONPATH: '/home/ops/x-trade',
           NANOCLAW_GROUP_FOLDER: groupFolder,
+          ...(chatJid ? { NANOCLAW_CHAT_JID: chatJid } : {}),
         },
       },
     );
