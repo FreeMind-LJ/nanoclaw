@@ -681,7 +681,9 @@ describe('update_task schedule handling', () => {
     expect(task.schedule_type).toBe('cron');
     expect(task.schedule_value).toBe('25 15 * * 1-5');
     expect(task.next_run).toBeTruthy();
-    expect(new Date(task.next_run!).getTime()).toBeGreaterThan(Date.now() - 60000);
+    expect(new Date(task.next_run!).getTime()).toBeGreaterThan(
+      Date.now() - 60000,
+    );
   });
 
   it('updates interval next_run when only schedule_value is provided', async () => {
@@ -701,8 +703,12 @@ describe('update_task schedule handling', () => {
     const task = getTaskById('task-interval')!;
     expect(task.schedule_type).toBe('interval');
     expect(task.schedule_value).toBe('600000');
-    expect(new Date(task.next_run!).getTime()).toBeGreaterThanOrEqual(before + 600000 - 1000);
-    expect(new Date(task.next_run!).getTime()).toBeLessThanOrEqual(Date.now() + 600000 + 1000);
+    expect(new Date(task.next_run!).getTime()).toBeGreaterThanOrEqual(
+      before + 600000 - 1000,
+    );
+    expect(new Date(task.next_run!).getTime()).toBeLessThanOrEqual(
+      Date.now() + 600000 + 1000,
+    );
   });
 });
 

@@ -66,7 +66,9 @@ function computeNextTradingRun(
           cursorLocalMs - startLocalMs - TRADING_EXECUTION_DELAY_MS;
         if (elapsedMs < 0) {
           if (candidateLocalMs <= endLocalMs) {
-            return new Date(candidateLocalMs - SHANGHAI_OFFSET_MS).toISOString();
+            return new Date(
+              candidateLocalMs - SHANGHAI_OFFSET_MS,
+            ).toISOString();
           }
           continue;
         }
