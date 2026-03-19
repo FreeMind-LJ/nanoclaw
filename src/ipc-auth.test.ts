@@ -635,6 +635,77 @@ describe('schedule_task context_mode', () => {
   });
 });
 
+// --- update_task schedule handling ---
+
+describe('update_task schedule handling', () => {
+  beforeEach(() => {
+    createTask({
+      id: 'task-cron',
+      group_folder: 'other-group',
+      chat_jid: 'other@g.us',
+      prompt: 'cron task',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: '2025-06-01T01:00:00.000Z',
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+    createTask({
+      id: 'task-interval',
+      group_folder: 'other-group',
+      chat_jid: 'other@g.us',
+      prompt: 'interval task',
+      schedule_type: 'interval',
+      schedule_value: '300000',
+      context_mode: 'isolated',
+      next_run: '2025-06-01T01:00:00.000Z',
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('updates cron next_run when only schedule_value is provided', async () => {
+    await processTaskIpc(
+      {
+        type: 'update_task',
+        taskId: 'task-cron',
+        schedule_value: '25 15 * * 1-5',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const task = getTaskById('task-cron')!;
+    expect(task.schedule_type).toBe('cron');
+    expect(task.schedule_value).toBe('25 15 * * 1-5');
+    expect(task.next_run).toBeTruthy();
+    expect(new Date(task.next_run!).getTime()).toBeGreaterThan(Date.now() - 60000);
+  });
+
+  it('updates interval next_run when only schedule_value is provided', async () => {
+    const before = Date.now();
+
+    await processTaskIpc(
+      {
+        type: 'update_task',
+        taskId: 'task-interval',
+        schedule_value: '600000',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const task = getTaskById('task-interval')!;
+    expect(task.schedule_type).toBe('interval');
+    expect(task.schedule_value).toBe('600000');
+    expect(new Date(task.next_run!).getTime()).toBeGreaterThanOrEqual(before + 600000 - 1000);
+    expect(new Date(task.next_run!).getTime()).toBeLessThanOrEqual(Date.now() + 600000 + 1000);
+  });
+});
+
 // --- register_group success path ---
 
 describe('register_group success', () => {

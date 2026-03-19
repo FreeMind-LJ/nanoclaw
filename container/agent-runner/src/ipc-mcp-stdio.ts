@@ -259,17 +259,17 @@ server.tool(
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
   },
   async (args) => {
-    // Validate schedule_value if provided
-    if (args.schedule_type === 'cron' || (!args.schedule_type && args.schedule_value)) {
-      if (args.schedule_value) {
-        try {
-          CronExpressionParser.parse(args.schedule_value);
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: `Invalid cron: "${args.schedule_value}".` }],
-            isError: true,
-          };
-        }
+    // Only validate when the caller explicitly changes the schedule type.
+    // If only schedule_value is provided, the host reconciles it against the
+    // existing task's schedule_type and performs authoritative validation.
+    if (args.schedule_type === 'cron' && args.schedule_value) {
+      try {
+        CronExpressionParser.parse(args.schedule_value);
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: `Invalid cron: "${args.schedule_value}".` }],
+          isError: true,
+        };
       }
     }
     if (args.schedule_type === 'interval' && args.schedule_value) {
@@ -277,6 +277,21 @@ server.tool(
       if (isNaN(ms) || ms <= 0) {
         return {
           content: [{ type: 'text' as const, text: `Invalid interval: "${args.schedule_value}".` }],
+          isError: true,
+        };
+      }
+    }
+    if (args.schedule_type === 'once' && args.schedule_value) {
+      if (/[Zz]$/.test(args.schedule_value) || /[+-]\d{2}:\d{2}$/.test(args.schedule_value)) {
+        return {
+          content: [{ type: 'text' as const, text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}".` }],
+          isError: true,
+        };
+      }
+      const date = new Date(args.schedule_value);
+      if (isNaN(date.getTime())) {
+        return {
+          content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}".` }],
           isError: true,
         };
       }

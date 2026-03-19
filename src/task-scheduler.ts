@@ -23,6 +23,66 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+const TRADING_EXECUTION_DELAY_MS = 60_000;
+const TRADING_WINDOWS_MINUTES: Array<[number, number]> = [
+  [9 * 60, 12 * 60],
+  [13 * 60 + 30, 15 * 60],
+  [21 * 60, 23 * 60],
+];
+
+function computeNextTradingRun(
+  afterIso: string,
+  intervalMs: number,
+): string | null {
+  if (!intervalMs || intervalMs <= 0) return null;
+
+  const cursorUtcMs = new Date(afterIso).getTime();
+  if (Number.isNaN(cursorUtcMs)) return null;
+
+  const cursorLocalMs = cursorUtcMs + SHANGHAI_OFFSET_MS;
+
+  for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+    const cursorLocal = new Date(cursorLocalMs);
+    const dayLocalMs = Date.UTC(
+      cursorLocal.getUTCFullYear(),
+      cursorLocal.getUTCMonth(),
+      cursorLocal.getUTCDate() + dayOffset,
+      0,
+      0,
+      0,
+      0,
+    );
+    const weekday = new Date(dayLocalMs).getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+
+    for (const [startMinute, endMinute] of TRADING_WINDOWS_MINUTES) {
+      const startLocalMs = dayLocalMs + startMinute * 60_000;
+      const endLocalMs = dayLocalMs + endMinute * 60_000;
+      let candidateLocalMs =
+        startLocalMs + intervalMs + TRADING_EXECUTION_DELAY_MS;
+      if (cursorLocalMs >= startLocalMs) {
+        const elapsedMs =
+          cursorLocalMs - startLocalMs - TRADING_EXECUTION_DELAY_MS;
+        if (elapsedMs < 0) {
+          if (candidateLocalMs <= endLocalMs) {
+            return new Date(candidateLocalMs - SHANGHAI_OFFSET_MS).toISOString();
+          }
+          continue;
+        }
+        const steps = Math.floor(elapsedMs / intervalMs) + 1;
+        candidateLocalMs =
+          startLocalMs + steps * intervalMs + TRADING_EXECUTION_DELAY_MS;
+      }
+      if (candidateLocalMs <= endLocalMs) {
+        return new Date(candidateLocalMs - SHANGHAI_OFFSET_MS).toISOString();
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Compute the next run time for a recurring task, anchored to the
  * task's scheduled time rather than Date.now() to prevent cumulative
@@ -61,6 +121,19 @@ export function computeNextRun(task: ScheduledTask): string | null {
     return new Date(next).toISOString();
   }
 
+  if (task.schedule_type === 'trading_interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    if (!ms || ms <= 0 || !task.next_run) {
+      logger.warn(
+        { taskId: task.id, value: task.schedule_value },
+        'Invalid trading interval value',
+      );
+      return new Date(now + 60_000).toISOString();
+    }
+    const nextRun = computeNextTradingRun(task.next_run, ms);
+    return nextRun ?? new Date(now + 60_000).toISOString();
+  }
+
   return null;
 }
 
@@ -80,6 +153,45 @@ export interface SchedulerDependencies {
 function isRecoverableSessionResumeError(error: string | null): boolean {
   if (!error) return false;
   return error.includes('Claude Code process exited with code 1');
+}
+
+function buildScheduledTaskFailureMessage(
+  task: ScheduledTask,
+  error: string,
+): string {
+  const reason = error.replace(/\s+/g, ' ').trim().slice(0, 200);
+  return `定时任务执行失败\n任务ID: ${task.id}\n原因: ${reason}`;
+}
+
+function buildScheduledTaskStartMessage(task: ScheduledTask): string {
+  return `定时任务开始执行\n任务ID: ${task.id}`;
+}
+
+function buildScheduledTaskHeartbeatMessage(
+  task: ScheduledTask,
+  elapsedMinutes: number,
+): string {
+  return `定时任务仍在执行\n任务ID: ${task.id}\n已运行: ${elapsedMinutes} 分钟`;
+}
+
+async function sendScheduledTaskMessage(
+  deps: SchedulerDependencies,
+  task: ScheduledTask,
+  text: string,
+  logLabel: string,
+): Promise<void> {
+  try {
+    await deps.sendMessage(task.chat_jid, text);
+  } catch (sendErr) {
+    logger.error(
+      {
+        taskId: task.id,
+        chatJid: task.chat_jid,
+        error: sendErr instanceof Error ? sendErr.message : String(sendErr),
+      },
+      logLabel,
+    );
+  }
 }
 
 async function runTask(
@@ -160,6 +272,30 @@ async function runTask(
   const sessions = deps.getSessions();
   const initialSessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  let completed = false;
+  let hasFinalUserMessage = false;
+
+  await sendScheduledTaskMessage(
+    deps,
+    task,
+    buildScheduledTaskStartMessage(task),
+    'Failed to send scheduled task start message',
+  );
+
+  const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+  const heartbeatTimer = setInterval(() => {
+    if (completed || hasFinalUserMessage) return;
+    const elapsedMinutes = Math.max(
+      1,
+      Math.floor((Date.now() - startTime) / 60000),
+    );
+    void sendScheduledTaskMessage(
+      deps,
+      task,
+      buildScheduledTaskHeartbeatMessage(task, elapsedMinutes),
+      'Failed to send scheduled task heartbeat message',
+    );
+  }, HEARTBEAT_INTERVAL_MS);
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -198,6 +334,7 @@ async function runTask(
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)
           await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          hasFinalUserMessage = true;
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -263,9 +400,21 @@ async function runTask(
     if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
     logger.error({ taskId: task.id, error }, 'Task failed');
+  } finally {
+    completed = true;
+    clearInterval(heartbeatTimer);
   }
 
   const durationMs = Date.now() - startTime;
+
+  if (error && !result) {
+    await sendScheduledTaskMessage(
+      deps,
+      task,
+      buildScheduledTaskFailureMessage(task, error),
+      'Failed to send scheduled task failure message',
+    );
+  }
 
   logTaskRun({
     task_id: task.id,

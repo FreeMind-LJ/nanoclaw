@@ -83,13 +83,19 @@ class McpManager {
         'Container connected to MCP bridge',
       );
 
-      // Bidirectional pipe: Container Socket <-> Python Stdio
-      client.pipe(mcpProc.stdin!);
+      // Keep the shim process alive across client reconnects. If the socket
+      // closes, ending stdin would make the shim exit and tear down the bridge.
+      client.pipe(mcpProc.stdin!, { end: false });
       mcpProc.stdout!.pipe(client);
 
       client.on('error', (err) =>
         logger.error({ err, serverName }, 'MCP client socket error'),
       );
+
+      client.on('close', () => {
+        mcpProc.stdout?.unpipe(client);
+        client.unpipe(mcpProc.stdin!);
+      });
     });
 
     mcpProc.on('exit', (code) => {

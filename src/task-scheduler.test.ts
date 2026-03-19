@@ -53,8 +53,11 @@ describe('task scheduler', () => {
       created_at: '2026-02-22T00:00:00.000Z',
     });
 
+    let started = false;
     const enqueueTask = vi.fn(
       (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        if (started) return;
+        started = true;
         void fn();
       },
     );
@@ -148,6 +151,44 @@ describe('task scheduler', () => {
     expect(offset).toBe(0);
   });
 
+  it('computeNextRun keeps trading-interval tasks inside trading windows', () => {
+    const task = {
+      id: 'trading-window-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'trading_interval' as const,
+      schedule_value: String(15 * 60 * 1000),
+      context_mode: 'isolated' as const,
+      next_run: '2026-03-17T03:45:00.000Z',
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-03-17T03:30:00.000Z',
+    };
+
+    expect(computeNextRun(task)).toBe('2026-03-17T03:46:00.000Z');
+  });
+
+  it('computeNextRun starts trading-interval tasks at the next session open', () => {
+    const task = {
+      id: 'trading-open-test',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'trading_interval' as const,
+      schedule_value: String(15 * 60 * 1000),
+      context_mode: 'isolated' as const,
+      next_run: '2026-03-17T09:17:09.931Z',
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-03-17T09:17:09.931Z',
+    };
+
+    expect(computeNextRun(task)).toBe('2026-03-17T13:16:00.000Z');
+  });
+
   it('retries scheduled group-context tasks with a fresh session after resume failure', async () => {
     createTask({
       id: 'task-group-retry',
@@ -214,5 +255,151 @@ describe('task scheduler', () => {
     expect(getAllSessions()).toEqual({
       'internal_trading-desk': 'fresh-session',
     });
+  });
+
+  it('sends a failure message when a scheduled task times out without output', async () => {
+    createTask({
+      id: 'task-timeout',
+      group_folder: 'internal_trading-desk',
+      chat_jid: 'tg:6325556041',
+      prompt: 'run',
+      schedule_type: 'once',
+      schedule_value: '2026-03-12T00:00:00.000Z',
+      context_mode: 'group',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-03-12T00:00:00.000Z',
+    });
+
+    runContainerAgent.mockResolvedValueOnce({
+      status: 'error',
+      result: null,
+      error: 'Container timed out after 1800000ms',
+    });
+
+    const sendMessage = vi.fn(async () => {});
+    let started = false;
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        if (started) return;
+        started = true;
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'tg:6325556041': {
+          name: 'Telegram Trading Desk',
+          folder: 'internal_trading-desk',
+          trigger: '@Andy',
+          added_at: '2026-03-12T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: {
+        enqueueTask,
+        closeStdin: vi.fn(),
+        notifyIdle: vi.fn(),
+      } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'tg:6325556041',
+      expect.stringContaining('定时任务开始执行'),
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'tg:6325556041',
+      expect.stringContaining('定时任务执行失败'),
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'tg:6325556041',
+      expect.stringContaining('Container timed out after 1800000ms'),
+    );
+  });
+
+  it('sends heartbeat messages while a scheduled task is still running', async () => {
+    createTask({
+      id: 'task-heartbeat',
+      group_folder: 'internal_trading-desk',
+      chat_jid: 'tg:6325556041',
+      prompt: 'run',
+      schedule_type: 'once',
+      schedule_value: '2026-03-12T00:00:00.000Z',
+      context_mode: 'group',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-03-12T00:00:00.000Z',
+    });
+
+    let resolveRun!: (value: {
+      status: 'success';
+      result: null;
+      newSessionId?: string;
+    }) => void;
+    runContainerAgent.mockImplementationOnce(
+      () =>
+        new Promise<{
+          status: 'success';
+          result: null;
+          newSessionId?: string;
+        }>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+
+    const sendMessage = vi.fn(async () => {});
+    let started = false;
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        if (started) return;
+        started = true;
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'tg:6325556041': {
+          name: 'Telegram Trading Desk',
+          folder: 'internal_trading-desk',
+          trigger: '@Andy',
+          added_at: '2026-03-12T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: {
+        enqueueTask,
+        closeStdin: vi.fn(),
+        notifyIdle: vi.fn(),
+      } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'tg:6325556041',
+      expect.stringContaining('定时任务开始执行'),
+    );
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'tg:6325556041',
+      expect.stringContaining('定时任务仍在执行'),
+    );
+
+    resolveRun({ status: 'success', result: null });
+    await vi.advanceTimersByTimeAsync(10);
   });
 });
