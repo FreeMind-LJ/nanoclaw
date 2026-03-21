@@ -43,10 +43,18 @@ export function readEnvFile(keys: string[]): Record<string, string> {
 }
 
 export function readSharedAiDefaultModel(): string | undefined {
-  const configPath = path.resolve(process.cwd(), '..', 'workspace', 'config', 'ai_config.yaml');
+  const configPath = path.resolve(
+    process.cwd(),
+    '..',
+    'workspace',
+    'config',
+    'ai_config.yaml',
+  );
   try {
     const raw = fs.readFileSync(configPath, 'utf-8');
-    const parsed = YAML.parse(raw) as { ai?: { default_model?: string } } | null;
+    const parsed = YAML.parse(raw) as {
+      ai?: { default_model?: string };
+    } | null;
     const modelId = parsed?.ai?.default_model?.trim();
     return modelId || undefined;
   } catch (err) {
