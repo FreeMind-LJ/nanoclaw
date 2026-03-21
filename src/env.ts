@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import YAML from 'yaml';
 import { logger } from './logger.js';
 
 /**
@@ -39,4 +40,17 @@ export function readEnvFile(keys: string[]): Record<string, string> {
   }
 
   return result;
+}
+
+export function readSharedAiDefaultModel(): string | undefined {
+  const configPath = path.resolve(process.cwd(), '..', 'workspace', 'config', 'ai_config.yaml');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed = YAML.parse(raw) as { ai?: { default_model?: string } } | null;
+    const modelId = parsed?.ai?.default_model?.trim();
+    return modelId || undefined;
+  } catch (err) {
+    logger.debug({ err, configPath }, 'shared ai_config.yaml not available');
+    return undefined;
+  }
 }

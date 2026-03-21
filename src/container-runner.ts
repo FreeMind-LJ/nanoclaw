@@ -26,7 +26,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { readEnvFile } from './env.js';
+import { readEnvFile, readSharedAiDefaultModel } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -273,8 +273,12 @@ function buildContainerArgs(
 
   // Pass model configuration if specified
   const envConfig = readEnvFile(['ANTHROPIC_MODEL']);
-  if (envConfig.ANTHROPIC_MODEL) {
-    args.push('-e', `ANTHROPIC_MODEL=${envConfig.ANTHROPIC_MODEL}`);
+  const configuredModel =
+    process.env.ANTHROPIC_MODEL ||
+    envConfig.ANTHROPIC_MODEL ||
+    readSharedAiDefaultModel();
+  if (configuredModel) {
+    args.push('-e', `ANTHROPIC_MODEL=${configuredModel}`);
   }
 
   // Runtime-specific args for host gateway resolution
