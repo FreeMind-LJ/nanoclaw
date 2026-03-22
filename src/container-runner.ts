@@ -279,8 +279,8 @@ function buildContainerArgs(
   const envConfig = readEnvFile(['ANTHROPIC_MODEL']);
   const configuredModel = normalizeAnthropicModel(
     process.env.ANTHROPIC_MODEL ||
-    envConfig.ANTHROPIC_MODEL ||
-    readSharedAiDefaultModel(),
+      envConfig.ANTHROPIC_MODEL ||
+      readSharedAiDefaultModel(),
   );
   if (configuredModel) {
     args.push('-e', `ANTHROPIC_MODEL=${configuredModel}`);

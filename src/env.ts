@@ -74,13 +74,21 @@ export function normalizeAnthropicModel(modelId?: string): string | undefined {
   if (!raw) return undefined;
 
   const lowered = raw.toLowerCase();
-  if (lowered === 'sonnet' || lowered === 'opus' || lowered === 'haiku' || lowered === 'inherit') {
+  if (
+    lowered === 'sonnet' ||
+    lowered === 'opus' ||
+    lowered === 'haiku' ||
+    lowered === 'inherit'
+  ) {
     return lowered;
   }
 
   for (const [pattern, normalized] of CLAUDE_MODEL_ALIAS_PATTERNS) {
     if (pattern.test(raw)) {
-      logger.warn({ modelId: raw, normalized }, 'Normalizing unsupported Claude model alias');
+      logger.warn(
+        { modelId: raw, normalized },
+        'Normalizing unsupported Claude model alias',
+      );
       return normalized;
     }
   }
