@@ -3,6 +3,12 @@ import path from 'path';
 import YAML from 'yaml';
 import { logger } from './logger.js';
 
+const CLAUDE_MODEL_ALIAS_PATTERNS: Array<[RegExp, string]> = [
+  [/^(?:anthropic\/)?claude-(?:3-7|4|4-\d+)?-?sonnet.*$/i, 'sonnet'],
+  [/^(?:anthropic\/)?claude-(?:3|3-\d+|4|4-\d+)?-?opus.*$/i, 'opus'],
+  [/^(?:anthropic\/)?claude-(?:3|3-\d+|4|4-\d+)?-?haiku.*$/i, 'haiku'],
+];
+
 /**
  * Parse the .env file and return values for the requested keys.
  * Does NOT load anything into process.env — callers decide what to
@@ -61,4 +67,23 @@ export function readSharedAiDefaultModel(): string | undefined {
     logger.debug({ err, configPath }, 'shared ai_config.yaml not available');
     return undefined;
   }
+}
+
+export function normalizeAnthropicModel(modelId?: string): string | undefined {
+  const raw = modelId?.trim();
+  if (!raw) return undefined;
+
+  const lowered = raw.toLowerCase();
+  if (lowered === 'sonnet' || lowered === 'opus' || lowered === 'haiku' || lowered === 'inherit') {
+    return lowered;
+  }
+
+  for (const [pattern, normalized] of CLAUDE_MODEL_ALIAS_PATTERNS) {
+    if (pattern.test(raw)) {
+      logger.warn({ modelId: raw, normalized }, 'Normalizing unsupported Claude model alias');
+      return normalized;
+    }
+  }
+
+  return raw;
 }

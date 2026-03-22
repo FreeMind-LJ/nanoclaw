@@ -26,7 +26,11 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { readEnvFile, readSharedAiDefaultModel } from './env.js';
+import {
+  normalizeAnthropicModel,
+  readEnvFile,
+  readSharedAiDefaultModel,
+} from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -273,10 +277,11 @@ function buildContainerArgs(
 
   // Pass model configuration if specified
   const envConfig = readEnvFile(['ANTHROPIC_MODEL']);
-  const configuredModel =
+  const configuredModel = normalizeAnthropicModel(
     process.env.ANTHROPIC_MODEL ||
     envConfig.ANTHROPIC_MODEL ||
-    readSharedAiDefaultModel();
+    readSharedAiDefaultModel(),
+  );
   if (configuredModel) {
     args.push('-e', `ANTHROPIC_MODEL=${configuredModel}`);
   }
