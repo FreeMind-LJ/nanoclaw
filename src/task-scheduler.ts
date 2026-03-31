@@ -24,7 +24,9 @@ import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
-const TRADING_EXECUTION_DELAY_MS = 60_000;
+// Wait briefly after each 15m close so market data can land before
+// scheduled watchers read local CSV snapshots.
+const TRADING_EXECUTION_DELAY_MS = 1 * 60_000;
 const TRADING_WINDOWS_MINUTES: Array<[number, number]> = [
   [9 * 60, 12 * 60],
   [13 * 60 + 30, 15 * 60],
