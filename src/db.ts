@@ -410,13 +410,22 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'chat_jid'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
     >
   >,
 ): void {
   const fields: string[] = [];
   const values: unknown[] = [];
 
+  if (updates.chat_jid !== undefined) {
+    fields.push('chat_jid = ?');
+    values.push(updates.chat_jid);
+  }
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
     values.push(updates.prompt);

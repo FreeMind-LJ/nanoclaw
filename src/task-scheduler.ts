@@ -154,6 +154,51 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+function resolveScheduledTaskChatJid(
+  task: ScheduledTask,
+  groups: Record<string, RegisteredGroup>,
+): string {
+  const chatJid = task.chat_jid.trim();
+  if (chatJid && chatJid.includes(':') && chatJid !== task.group_folder) {
+    return chatJid;
+  }
+
+  const fallback = Object.entries(groups).find(
+    ([, group]) => group.folder === task.group_folder,
+  )?.[0];
+  return fallback ?? chatJid;
+}
+
+function isPlanWatcherTask(task: ScheduledTask): boolean {
+  if (task.id.startsWith('plan-watch-')) return true;
+  return (
+    task.prompt.includes('mcp__x-trade__run_plan_watch') ||
+    task.prompt.includes('Call mcp__x-trade__run_plan_watch')
+  );
+}
+
+function extractScheduledTaskUserMessage(
+  task: ScheduledTask,
+  rawText: string | null | undefined,
+): string | null {
+  const text = typeof rawText === 'string' ? rawText.trim() : '';
+  if (!text) return null;
+  if (!isPlanWatcherTask(task)) return text;
+
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown };
+    const message =
+      typeof parsed.message === 'string' ? parsed.message.trim() : '';
+    if (message) {
+      return message;
+    }
+  } catch {
+    // Ignore parse failures and fall back to the original text.
+  }
+
+  return text;
+}
+
 function isRecoverableSessionResumeError(error: string | null): boolean {
   if (!error) return false;
   return error.includes('Claude Code process exited with code 1');
@@ -180,17 +225,18 @@ function buildScheduledTaskHeartbeatMessage(
 
 async function sendScheduledTaskMessage(
   deps: SchedulerDependencies,
+  deliveryJid: string,
   task: ScheduledTask,
   text: string,
   logLabel: string,
 ): Promise<void> {
   try {
-    await deps.sendMessage(task.chat_jid, text);
+    await deps.sendMessage(deliveryJid, text);
   } catch (sendErr) {
     logger.error(
       {
         taskId: task.id,
-        chatJid: task.chat_jid,
+        chatJid: deliveryJid,
         error: sendErr instanceof Error ? sendErr.message : String(sendErr),
       },
       logLabel,
@@ -252,6 +298,16 @@ async function runTask(
     return;
   }
 
+  const deliveryJid = resolveScheduledTaskChatJid(task, groups);
+  if (deliveryJid && deliveryJid !== task.chat_jid) {
+    logger.warn(
+      { taskId: task.id, chatJid: task.chat_jid, repairedChatJid: deliveryJid },
+      'Scheduled task chat_jid is invalid; falling back to registered group JID',
+    );
+    updateTask(task.id, { chat_jid: deliveryJid });
+    task.chat_jid = deliveryJid;
+  }
+
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
   const tasks = getAllTasks();
@@ -281,6 +337,7 @@ async function runTask(
 
   await sendScheduledTaskMessage(
     deps,
+    deliveryJid,
     task,
     buildScheduledTaskStartMessage(task),
     'Failed to send scheduled task start message',
@@ -295,6 +352,7 @@ async function runTask(
     );
     void sendScheduledTaskMessage(
       deps,
+      deliveryJid,
       task,
       buildScheduledTaskHeartbeatMessage(task, elapsedMinutes),
       'Failed to send scheduled task heartbeat message',
@@ -311,7 +369,7 @@ async function runTask(
     if (closeTimer) return; // already scheduled
     closeTimer = setTimeout(() => {
       logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      deps.queue.closeStdin(deliveryJid);
     }, TASK_CLOSE_DELAY_MS);
   };
 
@@ -322,27 +380,29 @@ async function runTask(
         prompt: task.prompt,
         sessionId,
         groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
+        chatJid: deliveryJid,
         isMain,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+        deps.onProcess(deliveryJid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.newSessionId) {
           sessions[task.group_folder] = streamedOutput.newSessionId;
           setSession(task.group_folder, streamedOutput.newSessionId);
         }
         if (streamedOutput.result) {
-          result = streamedOutput.result;
+          result = extractScheduledTaskUserMessage(task, streamedOutput.result);
           // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
-          hasFinalUserMessage = true;
+          if (result) {
+            await deps.sendMessage(deliveryJid, result);
+            hasFinalUserMessage = true;
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
+          deps.queue.notifyIdle(deliveryJid);
           scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
         }
         if (streamedOutput.status === 'error') {
@@ -393,7 +453,7 @@ async function runTask(
       error = output.error || 'Unknown error';
     } else if (output.result) {
       // Result was already forwarded to the user via the streaming callback above
-      result = output.result;
+      result = extractScheduledTaskUserMessage(task, output.result);
     }
 
     logger.info(
@@ -414,6 +474,7 @@ async function runTask(
   if (error && !result) {
     await sendScheduledTaskMessage(
       deps,
+      deliveryJid,
       task,
       buildScheduledTaskFailureMessage(task, error),
       'Failed to send scheduled task failure message',

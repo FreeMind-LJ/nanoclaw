@@ -402,4 +402,166 @@ describe('task scheduler', () => {
     resolveRun({ status: 'success', result: null });
     await vi.advanceTimersByTimeAsync(10);
   });
+
+  it('extracts top-level message from plan watcher JSON output before sending', async () => {
+    createTask({
+      id: 'plan-watch-watch-20260325T180932',
+      group_folder: 'internal_trading-desk',
+      chat_jid: 'tg:6325556041',
+      prompt:
+        'Run the existing Plan Watcher exactly once for the configured watch.\n' +
+        '1. Call mcp__x-trade__run_plan_watch with watch_id="watch-20260325T180932" and group_id="internal_trading-desk".\n',
+      schedule_type: 'once',
+      schedule_value: '2026-03-12T00:00:00.000Z',
+      context_mode: 'group',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-03-12T00:00:00.000Z',
+    });
+
+    const rawResult = JSON.stringify({
+      success: true,
+      message:
+        'Plan Watcher 本轮无新增触发，以下为全品种状态。\n\n棕榈油  9508  03-25 21:15  观察中。',
+      instrument_results: [
+        {
+          balanced: {
+            mode: 'wait_confirmation',
+            zone_label: '9500 / 10000',
+          },
+        },
+      ],
+    });
+    runContainerAgent.mockImplementationOnce(
+      async (_group, _input, _onProcess, onOutput) => {
+        await onOutput({
+          status: 'success',
+          result: rawResult,
+        });
+        return {
+          status: 'success',
+          result: rawResult,
+        };
+      },
+    );
+
+    const sendMessage = vi.fn(async () => {});
+    let started = false;
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        if (started) return;
+        started = true;
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'tg:6325556041': {
+          name: 'Telegram Trading Desk',
+          folder: 'internal_trading-desk',
+          trigger: '@Andy',
+          added_at: '2026-03-12T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: {
+        enqueueTask,
+        closeStdin: vi.fn(),
+        notifyIdle: vi.fn(),
+      } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'tg:6325556041',
+      expect.stringContaining('定时任务开始执行'),
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'tg:6325556041',
+      'Plan Watcher 本轮无新增触发，以下为全品种状态。\n\n棕榈油  9508  03-25 21:15  观察中。',
+    );
+  });
+
+  it('repairs invalid scheduled task chat_jid from the registered group folder', async () => {
+    createTask({
+      id: 'plan-watch-watch-20260330T155756',
+      group_folder: 'internal_trading-desk',
+      chat_jid: 'internal_trading-desk',
+      prompt:
+        'Run the existing Plan Watcher exactly once for the configured watch.\n' +
+        '1. Call mcp__x-trade__run_plan_watch with watch_id="watch-20260330T155756" and group_id="internal_trading-desk".\n',
+      schedule_type: 'once',
+      schedule_value: '2026-03-12T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-03-12T00:00:00.000Z',
+    });
+
+    runContainerAgent.mockImplementationOnce(
+      async (_group, _input, _onProcess, onOutput) => {
+        await onOutput({
+          status: 'success',
+          result: 'Plan Watcher 本轮有 1 个品种出现关键变化。',
+        });
+        return {
+          status: 'success',
+          result: 'Plan Watcher 本轮有 1 个品种出现关键变化。',
+        };
+      },
+    );
+
+    const sendMessage = vi.fn(async () => {});
+    let started = false;
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        if (started) return;
+        started = true;
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'qq:c2c:E33CB749C58D3657C09876FD039FD9BC': {
+          name: 'QQ Trading Desk',
+          folder: 'internal_trading-desk',
+          trigger: '@Andy',
+          added_at: '2026-03-12T00:00:00.000Z',
+          isMain: true,
+        },
+      }),
+      getSessions: () => ({}),
+      queue: {
+        enqueueTask,
+        closeStdin: vi.fn(),
+        notifyIdle: vi.fn(),
+      } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'qq:c2c:E33CB749C58D3657C09876FD039FD9BC',
+      expect.stringContaining('定时任务开始执行'),
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'qq:c2c:E33CB749C58D3657C09876FD039FD9BC',
+      'Plan Watcher 本轮有 1 个品种出现关键变化。',
+    );
+    expect(getTaskById('plan-watch-watch-20260330T155756')?.chat_jid).toBe(
+      'qq:c2c:E33CB749C58D3657C09876FD039FD9BC',
+    );
+  });
 });
